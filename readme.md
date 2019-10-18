@@ -424,11 +424,115 @@ private RequestSpecification spec(){
 
 Write rest assured tests for orders update and products endpoints
 
+## Async
+
+What types of async communication we can have ??
+
+
+Lets run our order verification system.
+`java -jar wiremock-standalone-2.25.1.jar --port 8282 -v`
+
+check mappings folders and json inside.
+
+We also have to modify our app to send status verification request.
+
+We will use for that purpose rest template.
+First we have to create a RestTemplate bean() in our Application class.
+
+```
+  @Bean
+  public RestTemplate restTemplate() {
+    return new RestTemplate();
+  }
+```
+
+Then we can inject it into our controller class.
+
+```
+  @Autowired
+  RestTemplate restTemplate;
+```
+
+and to make async call we have to do it in separate thread so lets create new thread pool.
+```
+ExecutorService executor = Executors.newSingleThreadExecutor();
+```
+
+then we can modify our api insert method
+
+```
+  @RequestMapping(method = RequestMethod.POST)
+  @ResponseStatus(HttpStatus.CREATED)
+  public Orders insertOrder(@RequestBody Orders orders) {
+    Orders persistedOrder = orderRepository.save(orders);
+
+    executor.execute(() -> {
+        log.info("Send order for verification: {}", orders);
+
+      try {
+        TimeUnit.SECONDS.sleep(new Random().nextInt(10));
+      } catch (InterruptedException e) {
+        log.error(e.getMessage());
+        Thread.currentThread().interrupt();
+      }
+
+      ResponseEntity<StatusResponse> status = restTemplate.postForEntity("http://localhost:8282/status",
+                new HttpEntity<>(new StatusRequest().setClient(orders.getClient()).setPrice(orders.getPrice())),
+                        StatusResponse.class);
+
+        log.info("Order verified with status: {}", Objects.requireNonNull(status.getBody()).getStatus());
+
+        orderRepository.save(persistedOrder.setStatus(status.getBody().getStatus()));
+    });
+
+    return persistedOrder;
+  }
+```
+
+and we have add two inner classes for our status request and body handling
+
+```
+  @Data
+  @NoArgsConstructor
+  @Accessors(chain = true)
+  static class StatusRequest {
+    private String client;
+    private BigDecimal price;
+  }
+
+  @Data
+  @NoArgsConstructor
+  static class StatusResponse {
+    private String status;
+  }
+```
+
+## Exercise 5
+
+Write tests for checking if order was rejected or accepted.
+
 ## Awaitility
-Types of async communication and why we are doing it.
-Second service
-Order status confirm
-Await for db change
+
+https://github.com/awaitility/awaitility
+
+```
+<dependency>
+      <groupId>org.awaitility</groupId>
+      <artifactId>awaitility</artifactId>
+      <version>4.0.1</version>
+      <scope>test</scope>
+</dependency>
+```
+
+using awaitility with assertJ
+https://github.com/awaitility/awaitility/wiki/Usage#using-assertj-or-fest-assert 
+
+
+## Exercise 6
+
+Apply awaitility to your tests
+
+
 
 ## API tests as e2e or as integration tests
 
