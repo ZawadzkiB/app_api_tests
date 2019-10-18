@@ -1,0 +1,16 @@
+{
+    "request" : {
+      "urlPath" : "/status",
+      "method" : "ANY",
+      "bodyPatterns" : [ {
+        "equalToJson" : "{\"client\":\"janusz\", \"price\":100}"
+      }]
+    },
+    "response" : {
+      "status" : 200,
+      "headers": {
+        "Content-Type":  "application/json"
+      },
+      "body" : "{\"status\":\"rejected\"}"
+    }
+}

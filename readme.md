@@ -19,7 +19,7 @@ Import new project in IntelliJ.
 
 Setup lombok in IntelliJ
 https://projectlombok.org/setup/intellij
-remember to enable annotation processing.
+remember to enable annotation processing (ctrl+shift+a and search for annotation processing)
 
 Create new instance of postgres db
 
@@ -436,3 +436,4 @@ Await for db change
 ## N+1
 ## Wiremock
 ## Pact.io
+## Migrations
