@@ -1,5 +1,3 @@
-# Title
-
 
 ## Setup
 
@@ -132,7 +130,7 @@ this method
 is an ApplicationRunner method it is running when application starts.
 
 Inside we are using our `orderRepository`.
-In orderRepository we don't have any methods but CrudRepository have some you can check that and we are using one of them `.save()` this method updates or insert new object into db. 
+In orderRepository we don't have any methods but CrudRepository have some, you can check that and we are using one of them `.save()` this method updates or insert new object into db. 
 
 Run program and check if Orders table is not empty.
 
@@ -533,11 +531,392 @@ https://github.com/awaitility/awaitility/wiki/Usage#using-assertj-or-fest-assert
 Apply awaitility to your tests
 
 
+## Wiremock
+
+http://wiremock.org/
+
+we can also use it inside tests, don't have to run standalone.
+
+```
+    <dependency>
+        <groupId>com.github.tomakehurst</groupId>
+        <artifactId>wiremock</artifactId>
+        <version>2.24.1</version>
+    </dependency>
+```
+
+we can now add a wiremock server to our tests
+
+```
+  WireMockServer wireMockServer;
+
+  @BeforeEach
+  void setup () {
+    wireMockServer = new WireMockServer(8282);
+    wireMockServer.start();
+  }
+
+  @AfterEach
+  void tearDown() {
+    wireMockServer.stop();
+    wireMockServer.resetMappings();
+  }
+```
+
+in before each we are creating new server and after each we are cleaning na stopping our server.
+
+Inside test we can add our mappings.
+For rejected test it will look like this:
+
+```
+  @Test
+  void insertRejected() {
+
+    wireMockServer.stubFor(
+            post(urlEqualTo("/status")).withRequestBody(equalToIgnoreCase("{\"client\":\"janusz\",\"price\":100}"))
+                    .willReturn(
+                            aResponse().withBody("{\"status\":\"rejected\"}").withStatus(200).withHeader("content-type","application/json")
+                    )
+    );
+
+    ...
+```
+
+## Exercise 7
+
+Write stub mappings for accepted test.
+Write another test where we will receive a "undefined" status from our order verification system.
+We will be receiving that status when price is 0.00.
+
+## Pact Contracts
+
+https://docs.pact.io/
+
+Mocks can sometimes lead to green tests but errors in production.
+Solution for that is Consumer driven contracts or provider driven contracts.
+
+### Consumer part
+
+in our oder app pom.xml we have to override kotlin version
+```
+        <properties>
+          ...
+          <kotlin.version>1.3.50</kotlin.version>
+        </properties>
+```
+
+and add pact dependency
+
+```
+    <dependency>
+      <groupId>au.com.dius</groupId>
+      <artifactId>pact-jvm-consumer-junit5</artifactId>
+      <version>4.0.1</version>
+    </dependency>
+```
+
+and add a test for accepted status
+
+```
+@ExtendWith(PactConsumerTestExt.class)
+@ExtendWith(SpringExtension.class)
+@PactTestFor(providerName = "StatusVerifier", port = "8282")
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+public class StatusContractTest {
+
+  @Autowired
+  OrderRepository orderRepository;
+  
+  @Autowired
+  RestTemplate restTemplate;
+  
+  @LocalServerPort
+  private int port;
+
+  @Pact(provider = "StatusVerifier", consumer = "OrderApp")
+  public RequestResponsePact createPact(PactDslWithProvider builder) {
+    return builder
+            .given("accepted state")
+            .uponReceiving("Order which should be accepted")
+            .path("/status")
+            .method("POST")
+            .body(new PactDslJsonBody().asBody()
+                    .stringValue("client", "client")
+                    .numberValue("price", 100))
+            .willRespondWith()
+            .status(200)
+            .body(new PactDslJsonBody().asBody()
+                    .stringValue("status", "accepted"))
+            .toPact();
+  }
+
+  @Test
+  void insertAccepted() {
+
+    Orders order = given()
+            .port(port)
+            .basePath("/order")
+            .when()
+            .contentType(ContentType.JSON)
+            .body(new Orders().setClient("client").setNumber("Number").setPrice(BigDecimal.valueOf(100L)))
+            .post()
+            .then()
+            .statusCode(201)
+            .extract().as(Orders.class);
+
+    await().atMost(30, SECONDS).with().pollInterval(1L, SECONDS).untilAsserted(
+            () -> {
+              Optional<Orders> ordersOptional = orderRepository.findById(order.getId());
+              assertThat(ordersOptional.get()).isEqualToIgnoringGivenFields(order, "price", "status");
+              assertThat(ordersOptional.get().getStatus()).isEqualTo("accepted");
+              assertThat(ordersOptional.get().getPrice()).isEqualByComparingTo(order.getPrice());
+            });
+
+  }
+
+}
+```
+
+this part with @Pact is our mock something similar to wiremock stubFor(), we are describing there who is consumer and who is provider of that contract.
+
+we have to extends our test with:
+```
+@ExtendWith(PactConsumerTestExt.class)
+@PactTestFor(providerName = "StatusVerifier", port = "8282")
+```
+
+@PactTestFor run a mock server which will be containing our @Pact base on provider name. By default it runs on localhost
+and here we set also on which port it should run.
+
+@Test part looks like normal test which we had before.
+
+After running test and if test will pass there will be pact file generated.
+
+You can find it in `target/pacts` location
+
+This file should be shared with provider to make sure it
+will works also on his side.
+
+### Pact sharing
+
+There are different approaches for sharing pacts. It can be stored to some folder, it can shared on some artifacts repositories together wit jar files but there is also something called `pact broker`
+
+There is saas solution of pact broker https://pactflow.io/ 
+
+but we will set it up locally.
+Check docker-compose file and you will see there two images, one for pact broker and second for db for it.
+Just run `docker-compose up -d` and go to `localhost:9292`
+
+In order to share pacts from consumer side we have to add maven plugin to it.
+
+```
+            <plugin>
+                <groupId>au.com.dius</groupId>
+                <artifactId>pact-jvm-provider-maven</artifactId>
+                <version>4.0.0</version>
+                <configuration>
+                    <pactBrokerUrl>http://localhost:9292/</pactBrokerUrl>
+                </configuration>
+            </plugin>
+```
+
+we have our pact broker open so no auth needed but all can be configured in `<configuration>` block.
+
+When we have our pact generated in target folder then we can share them using
+`mvn pact:publish` command.
+
+Then you should see new pact on `localhost:9292`
+
+### Provider
+
+To test provider we have to prepare real app for status verification, not wiremock stubs.
+So let's create that fast.
+
+pom.xml
+```
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>2.1.9.RELEASE</version>
+        <relativePath/> <!-- lookup parent from repository -->
+    </parent>
+    <groupId>com.example.status</groupId>
+    <artifactId>status</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+    <properties>
+        <java.version>11</java.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.rest-assured</groupId>
+            <artifactId>rest-assured-all</artifactId>
+            <version>4.1.1</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.rest-assured</groupId>
+            <artifactId>rest-assured</artifactId>
+            <version>4.1.1</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>3.11.1</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.5.2</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <version>4.0.1</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>au.com.dius</groupId>
+            <artifactId>pact-jvm-provider-junit5</artifactId>
+            <version>4.0.1</version>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+
+</project>
+```
+
+StatusApplication.class
+```
+@SpringBootApplication
+@Slf4j
+@RestController("/status")
+public class StatusApplication {
+
+  public static void main(String[] args) {
+    SpringApplication.run(StatusApplication.class, args);
+  }
+
+  @RequestMapping(method = RequestMethod.POST)
+  public StatusResponse verify(@RequestBody StatusRequest statusRequest) {
+    log.info("verifying request {}", statusRequest);
+    if (statusRequest.client.equalsIgnoreCase("janusz")) {
+      return new StatusResponse().setStatus("rejected");
+    }
+    else if(statusRequest.price.compareTo(BigDecimal.ZERO)==0) {
+      return new StatusResponse().setStatus("undefined");
+    }
+    else {
+      return new StatusResponse().setStatus("accepted");
+    }
+  }
+
+
+  @Data
+  @NoArgsConstructor
+  @Accessors(chain = true)
+  static class StatusRequest {
+    private String client;
+    private BigDecimal price;
+  }
+
+  @Data
+  @NoArgsConstructor
+  @Accessors(chain = true)
+  static class StatusResponse {
+    private String status;
+  }
+
+}
+```
+
+we also need to add application.properties in resources folder
+and set there `server.port=8282`
+
+and last thing which we should do is add provider test
+
+```
+@Provider("StatusVerifier")
+@ExtendWith(SpringExtension.class)
+@PactBroker(host = "localhost", port = "9292")
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+class ProviderContractTest {
+
+  @LocalServerPort
+  private int port;
+
+  @BeforeEach
+  void before(PactVerificationContext context) {
+    System.setProperty("pact.verifier.publishResults","true");
+    context.setTarget(new HttpTestTarget("localhost", port));
+  }
+
+  @TestTemplate
+  @ExtendWith(PactVerificationInvocationContextProvider.class)
+  void pactVerificationTestTemplate(PactVerificationContext context) {
+    context.verifyInteraction();
+  }
+
+  @State("accepted state")
+  void state(){
+  }
+
+}
+```
+
+after running that test we should see on our pact broker that our pact was verified.
+
+![alt t](img/pact1.png)
 
 ## API tests as e2e or as integration tests
 
-## Many-to-Many
-## N+1
-## Wiremock
-## Pact.io
-## Migrations
+It depends on app you are testing.
+
+http://blog.codepipes.com/testing/software-testing-antipatterns.html
+https://medium.com/@copyconstruct/testing-microservices-the-sane-way-9bb31d158c16
+
+- Single page apps
+
+- Monolith
+
+- Microservices (gateway, domains)
